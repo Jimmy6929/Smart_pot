@@ -1,0 +1,138 @@
+import tkinter as tk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+import serial
+import threading
+import atexit
+import json
+import datetime
+
+# Global variables to hold sensor data
+sensor_data = {'A0': 0, 'A1': 0, 'C3': 0}
+
+# Replace with your port and baudrate
+serial_port = '/dev/tty.usbmodem21203'  # Replace with the correct port for your STM32
+baud_rate = 115200  # Match this with the baud rate of your STM32 configuration
+
+# Function to handle serial communication
+def read_serial():
+    with serial.Serial(serial_port, baud_rate, timeout=1) as ser:
+        while True:
+            if ser.in_waiting > 0:
+                line = ser.readline().decode('utf-8').rstrip()
+                print(line)
+                try:
+                    # Assuming the line format is 'A0:value,A1:value,C3:value'
+                    parts = line.split(',')
+                    for part in parts:
+                        sensor, value = part.split(':')
+                        sensor_data[sensor.strip()] = int(value.strip())
+                except ValueError:
+                    # Handle the case where the line isn't in the correct format
+                    print("Error parsing line:", line)
+
+# Function to save sensor data to a file with a timestamp
+def save_data_to_file():
+    with open('sensor_data.txt', 'a') as file:
+        data_with_timestamp = {
+            "time": datetime.datetime.now().isoformat(),
+            "data": sensor_data
+        }
+        file.write(json.dumps(data_with_timestamp) + '\n')
+
+# Function to read data from file
+def read_data_from_file():
+    data = {'A0': [], 'A1': [], 'C3': []}
+    timestamps = []
+    with open('sensor_data.txt', 'r') as file:
+        for line in file:
+            try:
+                entry = json.loads(line)
+                timestamps.append(entry["time"])
+                for key in data:
+                    data[key].append(entry["data"].get(key, 0))
+            except KeyError as e:
+                print(f"Missing key in line: {line}. Error: {e}")
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error in line: {line}. Error: {e}")
+    return timestamps, data
+
+
+# Function to generate a graph from data
+def generate_graph():
+    timestamps, data = read_data_from_file()
+    # Convert ISO format timestamps to datetime objects
+    datetime_objects = [datetime.datetime.fromisoformat(t) for t in timestamps]
+    # Use the first timestamp as a reference (zero time)
+    time_deltas = [(t - datetime_objects[0]).total_seconds() / 60 for t in datetime_objects]
+
+    plt.figure()
+    for key in data:
+        plt.plot(time_deltas, data[key], label=key)
+
+    # Set the x-axis to show time in 15-minute intervals
+    plt.xticks(range(0, int(max(time_deltas)) + 1, 15))
+    plt.xlabel('Time (minutes)')
+    plt.ylabel('Sensor Value')
+    plt.title('Sensor Data Over Time')
+    plt.legend()
+    plt.show()
+
+# Register the graph generating function to be called on program exit
+atexit.register(save_data_to_file)
+atexit.register(generate_graph)
+def on_exit():
+    save_data_to_file()
+    generate_graph()
+
+atexit.register(on_exit)
+
+# Start the serial thread
+serial_thread = threading.Thread(target=read_serial)
+serial_thread.daemon = True
+serial_thread.start()
+
+# Create a new Tkinter window
+window = tk.Tk()
+window.title("Sensor Data Display")
+
+# Set up matplotlib figures
+fig, axs = plt.subplots(1, 3, figsize=(9, 3))
+
+# Create three circular progress bars (A0 - blue, A1 - green, C3 - yellow)
+colors = ['blue', 'green', 'yellow']
+wedges, texts = [], []
+for i, color in enumerate(colors):
+    wedges.append(axs[i].pie([0, 100], colors=['white', color], startangle=90, counterclock=False, labels=[None, None])[0])
+    axs[i].add_artist(plt.Circle((0, 0), 0.7, color='white'))
+    texts.append(axs[i].text(0, 0, '0%', ha='center', va='center', fontsize=20))
+
+# Hide the labels and ticks
+for ax in axs:
+    ax.set_aspect('equal')
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+# Add the figures to the Tkinter window
+canvas = FigureCanvasTkAgg(fig, master=window)
+canvas.draw()
+canvas.get_tk_widget().pack()
+
+def update_gui():
+    # Update the GUI with new sensor data
+    for i, (key, color) in enumerate(zip(sensor_data, colors)):
+        value = sensor_data[key]
+        axs[i].clear()  # Clear the previous drawing
+        axs[i].pie([value, 100-value], colors=['white', color], startangle=90, counterclock=False, labels=[None, None])
+        axs[i].add_artist(plt.Circle((0, 0), 0.7, color='white'))
+        axs[i].text(0, 0, f"{value}%", ha='center', va='center', fontsize=20)
+    canvas.draw_idle()  # Update the canvas
+
+    # Schedule the next GUI update
+    window.after(100, update_gui)
+
+# Schedule the first GUI update
+window.after(100, update_gui)
+
+# Start the Tkinter loop
+window.mainloop()
